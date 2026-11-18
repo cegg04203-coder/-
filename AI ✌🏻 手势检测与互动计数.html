@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI ✌🏻 手势检测与互动计数 / Peace Sign Detector</title>
+    <!-- 引入 Tailwind CSS 进行现代化样式美化 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 MediaPipe Hands 与绘图工具库 -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a;
+        }
+        /* 镜像翻转画面，符合日常照镜子习惯 */
+        .mirrored {
+            transform: scaleX(-1);
+        }
+        /* 检测到手势时的呼吸发光动画 */
+        @keyframes glowPulse {
+            0%, 100% { box-shadow: 0 0 15px rgba(16, 185, 129, 0.5), inset 0 0 10px rgba(16, 185, 129, 0.2); }
+            50% { box-shadow: 0 0 30px rgba(16, 185, 129, 0.9), inset 0 0 20px rgba(16, 185, 129, 0.4); }
+        }
+        .peace-glow {
+            animation: glowPulse 1.5s infinite;
+        }
+    </style>
+</head>
+<body class="text-slate-100 min-h-screen flex flex-col items-center justify-between p-4 md:p-6 select-none">
+
+    <!-- 顶部标题栏 -->
+    <header class="w-full max-w-4xl text-center py-2">
+        <h1 class="text-2xl md:text-4xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 via-teal-300 to-cyan-400">
+            AI ✌🏻 手势检测与互动计数
+        </h1>
+        <p class="text-slate-400 text-xs md:text-sm mt-1">
+            Real-time MediaPipe Hands Peace Sign (✌🏻) Detector
+        </p>
+    </header>
+
+    <!-- 主体区域 -->
+    <main class="w-full max-w-4xl grid grid-cols-1 lg:grid-cols-3 gap-5 my-auto">
+        
+        <!-- 左侧：摄像头与手部骨骼绘制画布 (占 2 列) -->
+        <div class="lg:col-span-2 relative bg-slate-900 rounded-2xl overflow-hidden shadow-2xl border border-slate-700/80 flex items-center justify-center aspect-[4/3]">
+            <!-- 隐藏的原始视频流 -->
+            <video id="webcam" class="hidden" autoplay playsinline></video>
+            <!-- 镜像显示的绘制画布 -->
+            <canvas id="output_canvas" class="w-full h-full object-cover mirrored"></canvas>
+            
+            <!-- 检测到 ✌🏻 手势时的悬浮祝贺特效横幅 -->
+            <div id="peaceBanner" class="hidden absolute inset-x-4 top-1/2 -translate-y-1/2 bg-slate-900/85 backdrop-blur-md border-2 border-emerald-400 rounded-2xl p-4 text-center peace-glow z-20 transition-all duration-300 transform scale-100">
+                <div class="text-3xl mb-1">🎉 ✌🏻 🎉</div>
+                <div class="text-xl md:text-2xl font-extrabold text-emerald-400 tracking-wide">
+                    检测到 ✌🏻 手势！
+                </div>
+                <div class="text-xs md:text-sm text-emerald-200/80 font-medium mt-0.5">
+                    Peace Sign Detected!
+                </div>
+            </div>
+
+            <!-- 初始化加载 / 错误提示遮罩 -->
+            <div id="statusOverlay" class="absolute inset-0 bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center text-center p-6 z-30">
+                <div id="loadingSpinner" class="animate-spin rounded-full h-12 w-12 border-4 border-emerald-400 border-t-transparent mb-4"></div>
+                <h3 id="overlayTitle" class="text-lg font-bold text-slate-100">正在启动摄像头与手势模型...</h3>
+                <p id="overlayDesc" class="text-xs md:text-sm text-slate-400 mt-2 max-w-md leading-relaxed">
+                    请在弹出的浏览器权限窗口中点击 <span class="text-emerald-400 font-semibold">“允许 (Allow)”</span>。<br>
+                    注意：必须在 <code class="text-cyan-400">https://</code> 网页环境下运行才能调用摄像头。
+                </p>
+                <button id="retryBtn" onclick="location.reload()" class="hidden mt-5 px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold rounded-xl text-sm transition shadow-lg">
+                    重新尝试 / Reload
+                </button>
+            </div>
+        </div>
+
+        <!-- 右侧：计数与手指状态监控面板 (占 1 列) -->
+        <div class="flex flex-col gap-4 justify-between">
+            
+            <!-- 累计成功次数卡片 -->
+            <div class="bg-slate-800/70 backdrop-blur border border-slate-700/80 rounded-2xl p-5 text-center shadow-lg relative overflow-hidden">
+                <div class="absolute -top-6 -right-6 w-24 h-24 bg-emerald-500/10 rounded-full blur-xl"></div>
+                <div class="flex items-center justify-between mb-1">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">累计比 ✌🏻 成功次数</span>
+                    <button id="resetBtn" class="text-xs px-2.5 py-1 rounded-lg bg-slate-700/80 hover:bg-slate-600 text-slate-300 transition active:scale-95">
+                        清零重置
+                    </button>
+                </div>
+                <div id="peaceCount" class="text-6xl font-black text-emerald-400 my-2 tabular-nums">0</div>
+                <div id="statusBadge" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full bg-slate-700/90 text-slate-300">
+                    <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                    <span id="statusText">等待手部入镜...</span>
+                </div>
+            </div>
+
+            <!-- 手指细节实时监控卡片 -->
+            <div class="bg-slate-800/70 backdrop-blur border border-slate-700/80 rounded-2xl p-5 shadow-lg flex-1 flex flex-col justify-between">
+                <div>
+                    <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+                        手势细节监控 (Finger States)
+                    </h3>
+                    
+                    <div class="space-y-2.5 text-sm">
+                        <!-- 食指状态 -->
+                        <div class="flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-700/50">
+                            <span class="text-slate-300 font-medium">☝️ 食指 (Index)</span>
+                            <span id="indexState" class="text-xs font-bold px-2.5 py-0.5 rounded-md bg-slate-700 text-slate-400">未检测</span>
+                        </div>
+                        <!-- 中指状态 -->
+                        <div class="flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-700/50">
+                            <span class="text-slate-300 font-medium">🖕 中指 (Middle)</span>
+                            <span id="middleState" class="text-xs font-bold px-2.5 py-0.5 rounded-md bg-slate-700 text-slate-400">未检测</span>
+                        </div>
+                        <!-- 无名指状态 -->
+                        <div class="flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-700/50">
+                            <span class="text-slate-300 font-medium">💍 无名指 (Ring)</span>
+                            <span id="ringState" class="text-xs font-bold px-2.5 py-0.5 rounded-md bg-slate-700 text-slate-400">未检测</span>
+                        </div>
+                        <!-- 小指与拇指综合 -->
+                        <div class="flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-700/50">
+                            <span class="text-slate-300 font-medium">🤙 小指/拇指 (Others)</span>
+                            <span id="otherState" class="text-xs font-bold px-2.5 py-0.5 rounded-md bg-slate-700 text-slate-400">未检测</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 稳定度/防抖进度条 -->
+                <div class="mt-4 pt-3 border-t border-slate-700/60">
+                    <div class="flex justify-between text-xs mb-1.5">
+                        <span class="text-slate-400">动作稳定识别进度</span>
+                        <span id="progressText" class="text-emerald-400 font-bold">0%</span>
+                    </div>
+                    <div class="w-full bg-slate-900 h-2.5 rounded-full overflow-hidden p-0.5 border border-slate-700">
+                        <div id="stabilityBar" class="bg-gradient-to-r from-teal-400 to-emerald-400 h-full rounded-full transition-all duration-100" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- 底部提示栏 -->
+    <footer class="w-full max-w-4xl text-center py-2 text-xs text-slate-500">
+        使用说明：将手掌面向摄像头，伸直食指与中指比出“✌🏻”并保持约 0.5 秒即可完成一次计数；放下或握拳后可进行下一次计数。
+    </footer>
+
+    <script>
+        // ================= DOM 元素引用 =================
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        const statusOverlay = document.getElementById('statusOverlay');
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        const overlayTitle = document.getElementById('overlayTitle');
+        const overlayDesc = document.getElementById('overlayDesc');
+        const retryBtn = document.getElementById('retryBtn');
+        
+        const peaceBanner = document.getElementById('peaceBanner');
+        const peaceCountEl = document.getElementById('peaceCount');
+        const resetBtn = document.getElementById('resetBtn');
+        const statusBadge = document.getElementById('statusBadge');
+        const statusText = document.getElementById('statusText');
+        
+        const indexStateEl = document.getElementById('indexState');
+        const middleStateEl = document.getElementById('middleState');
+        const ringStateEl = document.getElementById('ringState');
+        const otherStateEl = document.getElementById('otherState');
+        
+        const stabilityBar = document.getElementById('stabilityBar');
+        const progressText = document.getElementById('progressText');
+
+        // ================= 状态机与防抖变量 =================
+        let count = 0;
+        let isModelLoaded = false;
+        let consecutivePeaceFrames = 0;      // 连续检测到 ✌🏻 的帧数
+        const REQUIRED_FRAMES = 8;           // 连续满足 8 帧（约 0.3~0.5 秒）触发计数，防止误触
+        let isPeaceTriggered = false;        // 当前动作周期内是否已经计过数（防重复计数锁）
+
+        // 重置计数按钮事件
+        resetBtn.addEventListener('click', () => {
+            count = 0;
+            peaceCountEl.innerText = '0';
+            isPeaceTriggered = false;
+            consecutivePeaceFrames = 0;
+            updateProgress(0);
+        });
+
+        // 更新单个手指状态徽章样式
+        function updateFingerBadge(el, isExtended, expectExtended) {
+            if (isExtended) {
+                el.innerText = '伸直 (Extended)';
+                el.className = expectExtended 
+                    ? 'text-xs font-bold px-2.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    : 'text-xs font-bold px-2.5 py-0.5 rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/40';
+            } else {
+                el.innerText = '弯曲 (Folded)';
+                el.className = !expectExtended 
+                    ? 'text-xs font-bold px-2.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    : 'text-xs font-bold px-2.5 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40';
+            }
+        }
+
+        // 重置手指状态显示
+        function resetFingerBadges() {
+            [indexStateEl, middleStateEl, ringStateEl, otherStateEl].forEach(el => {
+                el.innerText = '未检测';
+                el.className = 'text-xs font-bold px-2.5 py-0.5 rounded-md bg-slate-700 text-slate-400';
+            });
+        }
+
+        // 更新稳定度进度条
+        function updateProgress(percent) {
+            const clamped = Math.min(Math.max(Math.round(percent), 0), 100);
+            stabilityBar.style.width = `${clamped}%`;
+            progressText.innerText = `${clamped}%`;
+        }
+
+        // 计算两点之间的欧氏距离（用于更精准判断手指是否弯曲，适应手掌倾斜）
+        function getDistance(p1, p2) {
+            return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+        }
+
+        // ================= 手部关键点检测回调 =================
+        function onResults(results) {
+            // 首次成功接收画面时隐藏加载遮罩
+            if (!isModelLoaded) {
+                isModelLoaded = true;
+                statusOverlay.classList.add('hidden');
+            }
+
+            // 动态匹配画布与视频流分辨率
+            if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
+                canvasElement.width = videoElement.videoWidth || 640;
+                canvasElement.height = videoElement.videoHeight || 480;
+            }
+
+            // 绘制摄像头画面
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                // 取检测到的第一只手
+                const landmarks = results.multiHandLandmarks[0];
+
+                // 绘制亮绿色骨骼连线与高对比度关节点
+                drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {
+                    color: '#10b981', // Emerald-500
+                    lineWidth: 4
+                });
+                drawLandmarks(canvasCtx, landmarks, {
+                    color: '#fef08a', // Yellow-200
+                    fillColor: '#059669',
+                    lineWidth: 2,
+                    radius: 4
+                });
+
+                // MediaPipe Hands 21 关键点索引说明：
+                // 0: 手腕 (WRIST)
+                // 大拇指: 1(CMC), 2(MCP), 3(IP), 4(TIP)
+                // 食指:   5(MCP), 6(PIP), 7(DIP), 8(TIP)
+                // 中指:   9(MCP), 10(PIP), 11(DIP), 12(TIP)
+                // 无名指: 13(MCP), 14(PIP), 15(DIP), 16(TIP)
+                // 小指:   17(MCP), 18(PIP), 19(DIP), 20(TIP)
+                const wrist = landmarks[0];
+
+                // 通过比较【指尖到手腕的距离】与【第二指关节(PIP)到手腕的距离】判断伸直/弯曲
+                // 这种方法比单纯比较 Y 坐标更鲁棒，即使手稍微倾斜也能准确识别
+                const isIndexExtended  = getDistance(landmarks[8], wrist)  > getDistance(landmarks[6], wrist) * 1.15;
+                const isMiddleExtended = getDistance(landmarks[12], wrist) > getDistance(landmarks[10], wrist) * 1.15;
+                const isRingExtended   = getDistance(landmarks[16], wrist) > getDistance(landmarks[14], wrist) * 1.08;
+                const isPinkyExtended  = getDistance(landmarks[20], wrist) > getDistance(landmarks[18], wrist) * 1.08;
+                
+                // 大拇指判断：指尖(4)到小指根部(17)的距离是否小于拇指第一关节(2)到小指根部(17)的距离（表示向掌心内扣）
+                const isThumbFolded = getDistance(landmarks[4], landmarks[17]) < getDistance(landmarks[2], landmarks[17]) * 1.15;
+
+                // 更新右侧面板手指状态显示
+                updateFingerBadge(indexStateEl, isIndexExtended, true);
+                updateFingerBadge(middleStateEl, isMiddleExtended, true);
+                updateFingerBadge(ringStateEl, isRingExtended, false);
+                
+                const isOthersFolded = !isPinkyExtended && isThumbFolded;
+                updateFingerBadge(otherStateEl, !isOthersFolded, false);
+
+                // 判断是否同时满足 ✌🏻 手势条件：食指伸直 + 中指伸直 + 无名指弯曲 + 小指与拇指收拢
+                const isPeaceSign = isIndexExtended && isMiddleExtended && !isRingExtended && isOthersFolded;
+
+                if (isPeaceSign) {
+                    consecutivePeaceFrames++;
+                    const progress = (consecutivePeaceFrames / REQUIRED_FRAMES) * 100;
+                    updateProgress(progress);
+
+                    statusBadge.className = 'inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+                    statusText.innerText = '识别到 ✌🏻 姿势！';
+
+                    // 达到连续稳定帧数，触发祝贺特效与计数
+                    if (consecutivePeaceFrames >= REQUIRED_FRAMES) {
+                        peaceBanner.classList.remove('hidden');
+                        if (!isPeaceTriggered) {
+                            count++;
+                            peaceCountEl.innerText = count;
+                            isPeaceTriggered = true; // 锁定当前周期，防止一直比着无限加分
+                        }
+                    }
+                } else {
+                    // 姿势改变（例如放下手指或握拳），重置防抖计数器和锁定状态，准备下一次识别
+                    consecutivePeaceFrames = Math.max(0, consecutivePeaceFrames - 2);
+                    if (consecutivePeaceFrames === 0) {
+                        isPeaceTriggered = false;
+                        peaceBanner.classList.add('hidden');
+                    }
+                    updateProgress((consecutivePeaceFrames / REQUIRED_FRAMES) * 100);
+
+                    statusBadge.className = 'inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full bg-cyan-500/20 text-cyan-300';
+                    statusText.innerText = '手部追踪中，请比出 ✌🏻';
+                }
+
+            } else {
+                // 画面中未检测到手部
+                consecutivePeaceFrames = 0;
+                isPeaceTriggered = false;
+                peaceBanner.classList.add('hidden');
+                updateProgress(0);
+                resetFingerBadges();
+
+                statusBadge.className = 'inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full bg-slate-700/90 text-slate-300';
+                statusText.innerText = '未检测到手部，请将手放入画面';
+            }
+
+            canvasCtx.restore();
+        }
+
+        // ================= 初始化 MediaPipe Hands =================
+        async function initApp() {
+            try {
+                // 检查浏览器是否支持 mediaDevices (非 HTTPS 环境通常为 undefined)
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    throw new Error('INSECURE_CONTEXT');
+                }
+
+                const hands = new Hands({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                    }
+                });
+
+                hands.setOptions({
+                    maxNumHands: 1,                // 专注追踪单手，提升移动端性能与帧率
+                    modelComplexity: 1,            // 平衡精度与手机端流畅度
+                    minDetectionConfidence: 0.65,
+                    minTrackingConfidence: 0.65
+                });
+
+                hands.onResults(onResults);
+
+                // 启动前置摄像头
+                const camera = new Camera(videoElement, {
+                    onFrame: async () => {
+                        await hands.send({ image: videoElement });
+                    },
+                    width: 640,
+                    height: 480,
+                    facingMode: 'user'
+                });
+
+                await camera.start();
+
+            } catch (err) {
+                console.error('Camera / Model Initialization Error:', err);
+                loadingSpinner.classList.add('hidden');
+                retryBtn.classList.remove('hidden');
+
+                if (err.message === 'INSECURE_CONTEXT' || window.location.protocol === 'content:' || window.location.protocol === 'file:') {
+                    overlayTitle.innerText = '无法在当前本地文件模式下启动摄像头';
+                    overlayTitle.className = 'text-lg font-bold text-rose-400';
+                    overlayDesc.innerHTML = `
+                        您当前似乎是通过本地文件管理器直接打开的（协议为 <code>${window.location.protocol}</code>）。<br><br>
+                        手机浏览器出于安全限制，<strong>禁止本地文件调用摄像头</strong>。请将此文件保存为 <code>index.html</code> 并通过 <strong>GitHub Pages (https://...)</strong> 网址访问！
+                    `;
+                } else {
+                    overlayTitle.innerText = '摄像头权限被拒绝或设备不可用';
+                    overlayTitle.className = 'text-lg font-bold text-rose-400';
+                    overlayDesc.innerHTML = `
+                        错误信息：<code>${err.name || err.message}</code><br><br>
+                        请点击浏览器地址栏左侧的<strong>锁形/权限图标</strong>，将“摄像头/相机”权限设为<strong>允许</strong>，然后点击下方按钮刷新页面。
+                    `;
+                }
+            }
+        }
+
+        // 页面加载完成后启动
+        window.addEventListener('load', initApp);
+    </script>
+</body>
+</html>
